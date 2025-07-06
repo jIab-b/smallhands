@@ -2,6 +2,7 @@
 
 from typing import Any, List, Tuple, Dict
 from abc import ABC, abstractmethod
+from rank_bm25 import BM25Okapi
 
 class RetrievalStrategy(ABC):
     @abstractmethod
@@ -14,7 +15,6 @@ class RetrievalStrategy(ABC):
 
 class BM25Strategy(RetrievalStrategy):
     def __init__(self):
-        from rank_bm25 import BM25Okapi
         self.bm25 = None
         self.docs: List[str] = []
 

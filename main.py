@@ -1,98 +1,108 @@
 """
-SmallHands: Main entry point
+SmallHands: Main entry point for the lean code assistant.
 """
 import os
-from controller.task_graph import TaskGraph
-from controller.state import State
-from execution.local_executor import LocalExecutor
+import sys
+import json
 from llm.openai_model import OpenAIModel
-from llm.model_manager import ModelManager
-from memory.vector_store import FaissVectorStore
-from memory.semantic_indexer import SemanticIndexer
-from memory.hybrid_search import HybridSearch
-from memory.tool_exemplar_store import ToolExemplarStore
 from sandbox.wsl_sandbox import WSLSandbox
+from tools.registry import ToolRegistry
 from observability.logger import Logger
 from observability.guardrails import Guardrails
-import sys
-from agents.planner_agent import PlannerAgent
-from agents.worker_agent import WorkerAgent
-from tools.registry import ToolRegistry
+
+class ToolAgent:
+    """
+    A simple agent that selects and executes a single tool based on a user prompt.
+    """
+    def __init__(self, model: OpenAIModel, tool_registry: ToolRegistry, sandbox: WSLSandbox):
+        self.model = model
+        self.tool_registry = tool_registry
+        self.sandbox = sandbox
+
+    def _create_prompt(self, query: str, tools: str) -> str:
+        """Creates a prompt for the LLM to select a tool."""
+        return f"""
+You are a helpful AI assistant. Your goal is to select the best tool to respond to the user's query.
+Your output must be a single JSON object with two fields:
+- "tool_name": The name of the tool to use.
+- "args": A dictionary of arguments to pass to the tool.
+
+USER QUERY: "{query}"
+
+AVAILABLE TOOLS:
+---
+{tools}
+---
+
+Your response must be ONLY the JSON object.
+"""
+
+    def _clean_llm_response(self, response: str) -> str:
+        """Strips markdown fences from the LLM's JSON output."""
+        if response.startswith("```json"):
+            response = response[7:]
+        if response.endswith("```"):
+            response = response[:-3]
+        return response.strip()
+
+    def run(self, query: str) -> dict:
+        """Selects and runs a tool, returning the result."""
+        available_tools = self.tool_registry.get_tool_definitions_str()
+        prompt = self._create_prompt(query, available_tools)
+        
+        print("Selecting tool with model...")
+        llm_response = self.model.complete(prompt)
+        print(f"Received tool call from LLM: {llm_response}")
+
+        cleaned_response = self._clean_llm_response(llm_response)
+        
+        try:
+            tool_call = json.loads(cleaned_response)
+        except json.JSONDecodeError:
+            return {"success": False, "output": "Error: LLM returned invalid JSON."}
+
+        tool_name = tool_call.get("tool_name")
+        tool_args = tool_call.get("args", {})
+        
+        tool_fn = self.tool_registry.get_tool(tool_name)
+        if not tool_fn:
+            return {"success": False, "output": f"Error: LLM selected a non-existent tool: {tool_name}"}
+
+        print(f"Executing tool '{tool_name}' with args: {tool_args}")
+        with self.sandbox as sb:
+            execution_result = sb.run(tool_fn, **tool_args)
+        
+        print(f"Task finished. Result: {execution_result}")
+        return execution_result
 
 def main():
+    """Main application loop."""
     logger = Logger("smallhands")
     guard = Guardrails()
-    state_file = "state.json"
-    if os.path.exists(state_file):
-        state = State.load(state_file)
-    else:
-        state = State()
-    tg = TaskGraph()
-
-    orchestrator_llm = OpenAIModel(os.getenv("OPENAI_MODEL", "o4-mini"))
-    worker_llm = OpenAIModel(os.getenv("WORKER_MODEL", "gpt-4.1-mini"))
-    model_manager = ModelManager(orchestrator_llm, worker_llm)
-
-    vector_store = FaissVectorStore()
-    semantic_indexer = SemanticIndexer()
-    hybrid_search = HybridSearch()
-    exemplar_store = ToolExemplarStore()
-
-    sandbox = WSLSandbox()
-    executor = LocalExecutor()
-
-    # Index repository code into memory for context
-    semantic_indexer.index_repo()
-    all_chunks = [chunk for chunks in semantic_indexer.index.values() for chunk in chunks]
-    hybrid_search.index(all_chunks)
-
-    # Initialize tool registry and agents
+    
+    # Initialize core components
+    model = OpenAIModel(os.getenv("OPENAI_MODEL", "o4-mini"))
     tool_registry = ToolRegistry()
-    planner_agent = PlannerAgent(model_manager, tg, hybrid_search)
-    worker_agent = WorkerAgent(model_manager, hybrid_search, exemplar_store, sandbox, tool_registry)
+    sandbox = WSLSandbox()
+    agent = ToolAgent(model, tool_registry, sandbox)
 
-    # Obtain user query
+    # Get user query from command line or input
     if len(sys.argv) > 1:
-        user_query = sys.argv[1]
+        user_query = " ".join(sys.argv[1:])
     else:
         user_query = input("Enter your task: ")
 
     guard.validate_input(user_query)
-    logger.log("plan_start", query=user_query)
+    logger.log("query_start", query=user_query)
 
-    # Build task graph from user query
-    planner_agent.run(user_query)
-    logger.log("plan_complete", tasks=list(tg.nodes.keys()))
+    # Run the agent and get the result
+    result = agent.run(user_query)
+    guard.validate_output(result)
 
-    while not tg.is_complete():
-        for node in tg.get_ready_tasks():
-            task_desc = node.task_fn
-            async_res = executor.submit(worker_agent.run, task_desc)
-            result = async_res.get()
-            guard.validate_output(result)
-
-            # Self-correction logic
-            if "run_tests" in task_desc and not result.get("success"):
-                failure_log = result.get("output")
-                fix_task_desc = f"The tests failed. Read the following test output and fix the code to make the tests pass:\n{failure_log}"
-                
-                # Assume the previous node was the code generation task
-                code_gen_node_id = node.deps[0]
-                
-                # Create a new node for the fix task
-                fix_node_id = f"fix_{code_gen_node_id}"
-                tg.add_task(fix_node_id, fix_task_desc, deps=[code_gen_node_id])
-                
-                logger.log("self_correction_triggered", failed_task=node.node_id, fix_task=fix_node_id)
-            else:
-                state.mark_complete(node.node_id, result)
-                state.save(state_file)
-                tg.mark_complete(node.node_id, result)
-
-            logger.log("task_complete", task=node.node_id, result=result)
-
-    executor.shutdown()
-    logger.log("workflow_complete", tasks=list(state.task_status.keys()))
+    logger.log("query_complete", result=result)
+    print("\n--- Final Result ---")
+    print(result.get('output', 'No output from tool.'))
+    print("--------------------")
 
 if __name__ == "__main__":
     main()

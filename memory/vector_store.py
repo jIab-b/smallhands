@@ -8,7 +8,7 @@ from typing import List, Tuple, Any
 
 class FaissVectorStore:
     def __init__(self, model: str = "text-embedding-ada-002"):
-        openai.api_key = os.getenv("OPENAI_API_KEY")
+        self.client = openai.Client(api_key=os.getenv("OPENAI_API_KEY"))
         self.model = model
         self.index = None
         self.id_to_doc: List[str] = []
@@ -17,8 +17,8 @@ class FaissVectorStore:
         """Embed and index a list of documents."""
         embeddings: List[List[float]] = []
         for doc in docs:
-            resp = openai.Embedding.create(input=doc, model=self.model)
-            emb = resp["data"][0]["embedding"]
+            resp = self.client.embeddings.create(input=doc, model=self.model)
+            emb = resp.data[0].embedding
             embeddings.append(emb)
             self.id_to_doc.append(doc)
         arr = np.array(embeddings, dtype="float32")
@@ -28,8 +28,10 @@ class FaissVectorStore:
 
     def search(self, query: str, top_k: int = 5) -> List[Tuple[str, float]]:
         """Embed query and return top_k (doc, distance)."""
-        resp = openai.Embedding.create(input=query, model=self.model)
-        q_emb = resp["data"][0]["embedding"]
+        if self.index is None:
+            return []
+        resp = self.client.embeddings.create(input=query, model=self.model)
+        q_emb = resp.data[0].embedding
         q_arr = np.array([q_emb], dtype="float32")
         distances, idxs = self.index.search(q_arr, top_k)
         results: List[Tuple[str, float]] = []

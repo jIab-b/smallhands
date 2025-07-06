@@ -40,3 +40,12 @@ def create_pr(title: str, body: str, branch: str) -> dict:
         return {"success": True, "output": result.stdout}
     except subprocess.CalledProcessError as e:
         return {"success": False, "output": e.stderr}
+
+def write_file(path: str, content: str) -> dict:
+    """Write content to a file, creating it if it doesn't exist."""
+    try:
+        with open(path, "w") as f:
+            f.write(content)
+        return {"success": True, "output": f"File '{path}' written successfully."}
+    except Exception as e:
+        return {"success": False, "output": str(e)}

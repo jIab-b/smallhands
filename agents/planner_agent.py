@@ -7,6 +7,7 @@ from .base import Agent
 from controller.task_graph import TaskGraph
 from llm.model_manager import ModelManager
 from memory.hybrid_search import HybridSearch
+from memory.semantic_indexer import SemanticIndexer
 
 class PlannerAgent(Agent):
     """
@@ -16,10 +17,12 @@ class PlannerAgent(Agent):
         self,
         model_manager: ModelManager,
         task_graph: TaskGraph,
+        semantic_indexer: SemanticIndexer,
         memory: HybridSearch
     ):
         self.model_manager = model_manager
         self.task_graph = task_graph
+        self.semantic_indexer = semantic_indexer
         self.memory = memory
 
     def _create_planning_prompt(self, query: str, context: str) -> str:
@@ -42,15 +45,31 @@ CONTEXT:
 ---
 """
 
+    def _decide_indexing(self, user_query: str) -> bool:
+        """
+        Decides whether to index the repository based on the user query.
+        Uses a simple heuristic for now.
+        """
+        keywords = ["refactor", "debug", "add to", "analyze", "test", ".py"]
+        return any(keyword in user_query.lower() for keyword in keywords)
+
     def run(self, user_query: str):
         """
         Takes a user query, generates a task plan, and populates the task graph.
         """
         print(f"PlannerAgent received query: {user_query}")
 
-        # Retrieve relevant context from memory
-        chunks = self.memory.search(user_query)
-        relevant_context = "\n\n".join([chunk for chunk, _ in chunks]) or "No context available."
+        if self._decide_indexing(user_query):
+            print("Planner decided to index the repository.")
+            self.semantic_indexer.index_repo()
+            all_chunks = [chunk for chunks in self.semantic_indexer.index.values() for chunk in chunks]
+            self.memory.index(all_chunks)
+            # Retrieve relevant context from memory
+            chunks = self.memory.search(user_query)
+            relevant_context = "\n\n".join([chunk for chunk, _ in chunks]) or "No context available."
+        else:
+            print("Planner decided to skip indexing.")
+            relevant_context = "No repository context available."
 
         prompt = self._create_planning_prompt(user_query, relevant_context)
 
