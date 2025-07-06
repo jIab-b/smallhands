@@ -2,6 +2,7 @@
 
 import json
 import logging
+from datetime import datetime
 
 class Logger:
     def __init__(self, name: str):
@@ -11,5 +12,5 @@ class Logger:
         self.logger.addHandler(handler)
 
     def log(self, event: str, **data):
-        record = {"event": event, **data}
-        self.logger.info(json.dumps(record))
+         record = {"timestamp": datetime.utcnow().isoformat(), "event": event, **data}
+         self.logger.info(json.dumps(record))

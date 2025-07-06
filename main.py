@@ -14,6 +14,10 @@ from memory.tool_exemplar_store import ToolExemplarStore
 from sandbox.wsl_sandbox import WSLSandbox
 from observability.logger import Logger
 from observability.guardrails import Guardrails
+import sys
+from agents.planner_agent import PlannerAgent
+from agents.worker_agent import WorkerAgent
+from tools.registry import ToolRegistry
 
 def main():
     logger = Logger("smallhands")
@@ -33,23 +37,38 @@ def main():
     sandbox = WSLSandbox()
     executor = LocalExecutor()
 
-    def sample_task(task_id: str):
-        guard.validate_input(task_id)
-        logger.log("task_start", task=task_id)
-        result = f"Executed {task_id}"
-        logger.log("task_end", task=task_id, result=result)
-        guard.validate_output(result)
-        return result
+    # Index repository code into memory for context
+    semantic_indexer.index_repo()
+    all_chunks = [chunk for chunks in semantic_indexer.index.values() for chunk in chunks]
+    hybrid_search.index(all_chunks)
 
-    tg.add_task("task1", sample_task)
-    tg.add_task("task2", sample_task, deps=["task1"])
+    # Initialize tool registry and agents
+    tool_registry = ToolRegistry()
+    planner_agent = PlannerAgent(model_manager, tg, hybrid_search)
+    worker_agent = WorkerAgent(model_manager, hybrid_search, exemplar_store, sandbox, tool_registry)
+
+    # Obtain user query
+    if len(sys.argv) > 1:
+        user_query = sys.argv[1]
+    else:
+        user_query = input("Enter your task: ")
+
+    guard.validate_input(user_query)
+    logger.log("plan_start", query=user_query)
+
+    # Build task graph from user query
+    planner_agent.run(user_query)
+    logger.log("plan_complete", tasks=list(tg.nodes.keys()))
 
     while not tg.is_complete():
         for node in tg.get_ready_tasks():
-            async_res = executor.submit(node.task_fn, node.node_id)
+            task_desc = node.task_fn
+            async_res = executor.submit(worker_agent.run, task_desc)
             result = async_res.get()
+            guard.validate_output(result)
             state.mark_complete(node.node_id, result)
             tg.mark_complete(node.node_id, result)
+            logger.log("task_complete", task=node.node_id, result=result)
 
     executor.shutdown()
     logger.log("workflow_complete", tasks=list(state.task_status.keys()))

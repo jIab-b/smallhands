@@ -4,6 +4,7 @@ import os
 import shutil
 import tempfile
 import subprocess
+from typing import List
 
 class WSLSandbox:
     """Baseline sandbox using temporary workspace and optional cache mount."""
@@ -24,7 +25,18 @@ class WSLSandbox:
         """
         Execute a function within the sandbox context.
         """
-        return fn(*args, **kwargs)
+        current_dir = os.getcwd()
+        os.chdir(self.work_dir)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            os.chdir(current_dir)
+
+    def run_shell(self, cmd: List[str], capture_output: bool = True, text: bool = True) -> subprocess.CompletedProcess:
+        """
+        Execute a shell command within the sandbox workspace.
+        """
+        return subprocess.run(cmd, cwd=self.work_dir, capture_output=capture_output, text=text)
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         shutil.rmtree(self.work_dir, ignore_errors=True)
