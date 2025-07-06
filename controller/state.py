@@ -1,5 +1,6 @@
 """State models for SmallHands."""
 
+import json
 from pydantic import BaseModel
 from typing import Any, Dict
 
@@ -25,3 +26,15 @@ class State(BaseModel):
 
     def add_metadata(self, key: str, value: Any) -> None:
         self.metadata[key] = value
+
+    def save(self, path: str = "state.json") -> None:
+        """Saves the current state to a JSON file."""
+        with open(path, "w") as f:
+            f.write(self.model_dump_json(indent=4))
+
+    @classmethod
+    def load(cls, path: str = "state.json") -> "State":
+        """Loads the state from a JSON file."""
+        with open(path, "r") as f:
+            data = json.load(f)
+        return cls(**data)

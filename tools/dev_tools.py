@@ -26,7 +26,17 @@ def commit_git(message: str) -> dict:
     result = subprocess.run(["git", "commit", "-am", message], capture_output=True, text=True)
     return {"success": result.returncode == 0, "output": result.stdout + result.stderr}
 
-def create_pr(branch: str) -> dict:
-    """Create a pull request (not implemented)."""
-    # Placeholder for future GitHub/GitLab integration
-    return {"success": False, "output": "create_pr not implemented"}
+def create_pr(title: str, body: str, branch: str) -> dict:
+    """Create a pull request using the GitHub CLI."""
+    try:
+        # Ensure the branch is pushed to remote
+        subprocess.run(["git", "push", "origin", branch], check=True, capture_output=True, text=True)
+        
+        # Create the pull request
+        result = subprocess.run(
+            ["gh", "pr", "create", "--title", title, "--body", body, "--head", branch],
+            check=True, capture_output=True, text=True
+        )
+        return {"success": True, "output": result.stdout}
+    except subprocess.CalledProcessError as e:
+        return {"success": False, "output": e.stderr}

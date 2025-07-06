@@ -28,13 +28,19 @@ class WorkerAgent(Agent):
         self.sandbox = sandbox
         self.tool_registry = tool_registry
 
-    def _create_tool_selection_prompt(self, task_description: str, context: str, tools: str) -> str:
+    def _create_tool_selection_prompt(self, task_description: str, context: str, tools: str, exemplars: list) -> str:
         """Creates the prompt for the worker LLM to select a tool and its arguments."""
+        exemplar_str = "\n".join([f"- Task: {e['task']}\n  Tool Call: {e['tool_call']}" for e in exemplars])
         return f"""
 You are a worker agent responsible for executing a task. Based on the task description, context, and available tools, select the single best tool to use.
 Your output must be a single JSON object with two fields:
 - "tool_name": The name of the tool to use (e.g., "run_tests", "lint_code").
 - "args": A dictionary of arguments to pass to the tool.
+
+Here are some examples of successful past tool uses:
+---
+{exemplar_str}
+---
 
 TASK DESCRIPTION: "{task_description}"
 
@@ -70,7 +76,8 @@ Your response must be ONLY the JSON object.
         available_tools = self.tool_registry.get_tool_definitions_str()
 
         # 2. Select tool using the LLM
-        prompt = self._create_tool_selection_prompt(task_description, relevant_context, available_tools)
+        exemplars = self.tool_exemplar_store.get_exemplars(task_description, k=3)
+        prompt = self._create_tool_selection_prompt(task_description, relevant_context, available_tools, exemplars)
         print("Selecting tool with worker model...")
         tool_call_str = self.model_manager.execute_task(prompt)
         print(f"Received tool call from LLM: {tool_call_str}")

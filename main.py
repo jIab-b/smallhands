@@ -22,7 +22,11 @@ from tools.registry import ToolRegistry
 def main():
     logger = Logger("smallhands")
     guard = Guardrails()
-    state = State()
+    state_file = "state.json"
+    if os.path.exists(state_file):
+        state = State.load(state_file)
+    else:
+        state = State()
     tg = TaskGraph()
 
     orchestrator_llm = OpenAIModel(os.getenv("OPENAI_MODEL", "o4-mini"))
@@ -66,8 +70,25 @@ def main():
             async_res = executor.submit(worker_agent.run, task_desc)
             result = async_res.get()
             guard.validate_output(result)
-            state.mark_complete(node.node_id, result)
-            tg.mark_complete(node.node_id, result)
+
+            # Self-correction logic
+            if "run_tests" in task_desc and not result.get("success"):
+                failure_log = result.get("output")
+                fix_task_desc = f"The tests failed. Read the following test output and fix the code to make the tests pass:\n{failure_log}"
+                
+                # Assume the previous node was the code generation task
+                code_gen_node_id = node.deps[0]
+                
+                # Create a new node for the fix task
+                fix_node_id = f"fix_{code_gen_node_id}"
+                tg.add_task(fix_node_id, fix_task_desc, deps=[code_gen_node_id])
+                
+                logger.log("self_correction_triggered", failed_task=node.node_id, fix_task=fix_node_id)
+            else:
+                state.mark_complete(node.node_id, result)
+                state.save(state_file)
+                tg.mark_complete(node.node_id, result)
+
             logger.log("task_complete", task=node.node_id, result=result)
 
     executor.shutdown()
