@@ -1,0 +1,7 @@
+pydantic
+openai
+faiss-cpu
+rank_bm25
+pytest
+flake8
+black
